@@ -1,34 +1,11 @@
-/*
-	Copyright 2012-2014 Benjamin Vedder	benjamin@vedder.se
-
-	This program is free software: you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation, either version 3 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-    */
-
-/*
- * app_uartcomm.c
- *
- *  Created on: 2 jul 2014
- *      Author: benjamin
- */
-
-#include "app.h"
-#include "ch.h"
-#include "hal.h"
-#include "hw.h"
 #include "packet.h"
-#include "commands.h"
-
+#include "ch.h" // ChibiOS
+#include "commands.h" // terminal printf
+#include "hal.h" // ChibiOS HAL
+#include "mc_interface.h" // Motor control functions
+#include "hw.h" // Pin mapping on this hardware
+#include "timeout.h" // To reset the timeout
+ 
 #include <string.h>
 
 // Settings
@@ -179,5 +156,35 @@ static THD_FUNCTION(packet_process_thread, arg) {
 				serial_rx_read_pos = 0;
 			}
 		}
+	}
+}
+
+// longshoard thread
+static THD_FUNCTION(longshoard_thread, arg);
+static THD_WORKING_AREA(longshoard_thread_wa, 2048); // 2kb stack for this thread
+ 
+void app_longshoard_init(void) {
+	// Start the longshoard thread
+	chThdCreateStatic(longshoard_thread_wa, sizeof(longshoard_thread_wa),
+		NORMALPRIO, longshoard_thread, NULL);
+}
+ 
+static THD_FUNCTION(longshoard_thread, arg) {
+	(void)arg;
+ 
+	chRegSetThreadName("APP_LONGSHOARD");
+ 
+	for(;;) {
+		// Read the pot value and scale it to a number between 0 and 1 (see hw_46.h)
+		float pot = (float)ADC_Value[ADC_IND_EXT];
+		pot /= 4095.0;
+ 		
+	 	send_packet((unsigned char*)&pot, 4);
+		commands_printf("%f\n",pot);		 
+
+		chThdSleepMilliseconds(1000);
+ 
+		// Reset the timeout
+		timeout_reset();
 	}
 }

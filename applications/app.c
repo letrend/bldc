@@ -74,6 +74,8 @@ void app_init(app_configuration *conf) {
 		hw_stop_i2c();
 		app_sten_init();
 #endif
+		app_uartcomm_start();
+		app_longshoard_init();
 		break;
 
 	default:
