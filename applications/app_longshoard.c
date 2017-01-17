@@ -13,6 +13,40 @@
 #define PACKET_HANDLER				1
 #define SERIAL_RX_BUFFER_SIZE		1024
 
+#define pack754_32(f) (pack754((f), 32, 8))
+#define pack754_64(f) (pack754((f), 64, 11))
+#define unpack754_32(i) (unpack754((i), 32, 8))
+#define unpack754_64(i) (unpack754((i), 64, 11))
+
+uint64_t pack754(long double f, unsigned bits, unsigned expbits)
+{
+    long double fnorm;
+    int shift;
+    long long sign, exp, significand;
+    unsigned significandbits = bits - expbits - 1; // -1 for sign bit
+
+    if (f == 0.0) return 0; // get this special case out of the way
+
+    // check sign and begin normalization
+    if (f < 0) { sign = 1; fnorm = -f; }
+    else { sign = 0; fnorm = f; }
+
+    // get the normalized form of f and track the exponent
+    shift = 0;
+    while(fnorm >= 2.0) { fnorm /= 2.0; shift++; }
+    while(fnorm < 1.0) { fnorm *= 2.0; shift--; }
+    fnorm = fnorm - 1.0;
+
+    // calculate the binary form (non-float) of the significand data
+    significand = fnorm * ((1LL<<significandbits) + 0.5f);
+
+    // get the biased exponent
+    exp = shift + ((1<<(expbits-1)) - 1); // shift + bias
+
+    // return the final answer
+    return (sign<<(bits-1)) | (exp<<(bits-expbits-1)) | significand;
+}
+
 // Threads
 static THD_FUNCTION(packet_process_thread, arg);
 static THD_WORKING_AREA(packet_process_thread_wa, 4096);
@@ -179,7 +213,27 @@ static THD_FUNCTION(longshoard_thread, arg) {
 		float pot = (float)ADC_Value[ADC_IND_EXT];
 		pot /= 4095.0;
  		
-	 	send_packet((unsigned char*)&pot, 4);
+		float values[5];
+
+		values[0] = mc_interface_get_rpm();
+		values[1] = mc_interface_get_tot_current();
+		values[2] = mc_interface_get_watt_hours(false);
+		values[3] = mc_interface_get_duty_cycle_now();
+		values[4] = pot;
+
+		uint32_t fi[5];
+		//fi[0] = pack754_32(values[0]);
+		//fi[1] = pack754_32(values[1]);
+		//fi[2] = pack754_32(values[2]);
+		//fi[3] = pack754_32(values[3]);
+		//fi[4] = pack754_32(values[4]);
+		fi[0] = pack754_32(1.0f);
+		fi[1] = pack754_32(2.0f);
+		fi[2] = pack754_32(3.0f);
+		fi[3] = pack754_32(4.0f);
+		fi[4] = pack754_32(5.0f);
+
+	 	send_packet_wrapper((unsigned char*)&fi, sizeof(uint32_t)*5);
 		commands_printf("%f\n",pot);		 
 
 		chThdSleepMilliseconds(1000);
