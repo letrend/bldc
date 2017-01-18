@@ -202,7 +202,7 @@ void app_longshoard_init(void) {
 	chThdCreateStatic(longshoard_thread_wa, sizeof(longshoard_thread_wa),
 		NORMALPRIO, longshoard_thread, NULL);
 }
- 
+
 static THD_FUNCTION(longshoard_thread, arg) {
 	(void)arg;
  
@@ -216,9 +216,9 @@ static THD_FUNCTION(longshoard_thread, arg) {
 		float values[5];
 
 		values[0] = mc_interface_get_rpm();
-		values[1] = mc_interface_get_tot_current();
-		values[2] = mc_interface_get_watt_hours(false);
-		values[3] = mc_interface_get_duty_cycle_now();
+		values[1] = mc_interface_read_reset_avg_motor_current();
+		values[2] = mc_interface_read_reset_avg_input_current();
+		values[3] = GET_INPUT_VOLTAGE();
 		values[4] = pot;
 
 		uint32_t fi[5];
@@ -234,9 +234,33 @@ static THD_FUNCTION(longshoard_thread, arg) {
 		//fi[4] = pack754_32(5.0f);
 
 	 	packet_send_packet((unsigned char*)&fi, sizeof(uint32_t)*5, PACKET_HANDLER);
+
+		//int ind = 0;
+		
+		//buffer_append_float16(send_buffer, NTC_TEMP(ADC_IND_TEMP_MOS1), 1e1, &ind);
+		//buffer_append_float16(send_buffer, NTC_TEMP(ADC_IND_TEMP_MOS2), 1e1, &ind);
+		//buffer_append_float16(send_buffer, NTC_TEMP(ADC_IND_TEMP_MOS3), 1e1, &ind);
+		//buffer_append_float16(send_buffer, NTC_TEMP(ADC_IND_TEMP_MOS4), 1e1, &ind);
+		//buffer_append_float16(send_buffer, NTC_TEMP(ADC_IND_TEMP_MOS5), 1e1, &ind);
+		//buffer_append_float16(send_buffer, NTC_TEMP(ADC_IND_TEMP_MOS6), 1e1, &ind);
+		//buffer_append_float16(send_buffer, NTC_TEMP(ADC_IND_TEMP_PCB), 1e1, &ind);
+		//buffer_append_float32(send_buffer, mc_interface_read_reset_avg_motor_current(), 1e2, &ind);
+		//buffer_append_float32(send_buffer, mc_interface_read_reset_avg_input_current(), 1e2, &ind);
+		//buffer_append_float16(send_buffer, mc_interface_get_duty_cycle_now(), 1e3, &ind);
+		//buffer_append_float32(send_buffer, mc_interface_get_rpm(), 1e0, &ind);
+		//buffer_append_float16(send_buffer, GET_INPUT_VOLTAGE(), 1e1, &ind);
+		//buffer_append_float32(send_buffer, mc_interface_get_amp_hours(false), 1e4, &ind);
+		//buffer_append_float32(send_buffer, mc_interface_get_amp_hours_charged(false), 1e4, &ind);
+		//buffer_append_float32(send_buffer, mc_interface_get_watt_hours(false), 1e4, &ind);
+		//buffer_append_float32(send_buffer, mc_interface_get_watt_hours_charged(false), 1e4, &ind);
+		//buffer_append_int32(send_buffer, mc_interface_get_tachometer_value(false), &ind);
+		//buffer_append_int32(send_buffer, mc_interface_get_tachometer_abs_value(false), &ind);
+
+	 	//packet_send_packet(send_buffer, ind, PACKET_HANDLER);
+
 		commands_printf("%f\n",pot);		 
 
-		chThdSleepMilliseconds(20);
+		chThdSleepMilliseconds(50);
  
 		// Reset the timeout
 		timeout_reset();
