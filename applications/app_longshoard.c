@@ -222,21 +222,21 @@ static THD_FUNCTION(longshoard_thread, arg) {
 		values[4] = pot;
 
 		uint32_t fi[5];
-		//fi[0] = pack754_32(values[0]);
-		//fi[1] = pack754_32(values[1]);
-		//fi[2] = pack754_32(values[2]);
-		//fi[3] = pack754_32(values[3]);
-		//fi[4] = pack754_32(values[4]);
-		fi[0] = pack754_32(1.0f);
-		fi[1] = pack754_32(2.0f);
-		fi[2] = pack754_32(3.0f);
-		fi[3] = pack754_32(4.0f);
-		fi[4] = pack754_32(5.0f);
+		fi[0] = pack754_32(values[0]);
+		fi[1] = pack754_32(values[1]);
+		fi[2] = pack754_32(values[2]);
+		fi[3] = pack754_32(values[3]);
+		fi[4] = pack754_32(values[4]);
+		//fi[0] = pack754_32(1.0f);
+		//fi[1] = pack754_32(2.0f);
+		//fi[2] = pack754_32(3.0f);
+		//fi[3] = pack754_32(4.0f);
+		//fi[4] = pack754_32(5.0f);
 
-	 	send_packet_wrapper((unsigned char*)&fi, sizeof(uint32_t)*5);
+	 	packet_send_packet((unsigned char*)&fi, sizeof(uint32_t)*5, PACKET_HANDLER);
 		commands_printf("%f\n",pot);		 
 
-		chThdSleepMilliseconds(1000);
+		chThdSleepMilliseconds(20);
  
 		// Reset the timeout
 		timeout_reset();
