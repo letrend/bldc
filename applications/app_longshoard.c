@@ -18,6 +18,8 @@
 #define unpack754_32(i) (unpack754((i), 32, 8))
 #define unpack754_64(i) (unpack754((i), 64, 11))
 
+static bool new_data = 0, prev_data = 0;
+
 uint64_t pack754(long double f, unsigned bits, unsigned expbits)
 {
     long double fnorm;
@@ -45,6 +47,32 @@ uint64_t pack754(long double f, unsigned bits, unsigned expbits)
 
     // return the final answer
     return (sign<<(bits-1)) | (exp<<(bits-expbits-1)) | significand;
+}
+
+long double unpack754(uint64_t i, unsigned bits, unsigned expbits)
+{
+    long double result;
+    long long shift;
+    unsigned bias;
+    unsigned significandbits = bits - expbits - 1; // -1 for sign bit
+
+    if (i == 0) return 0.0;
+
+    // pull the significand
+    result = (i&((1LL<<significandbits)-1)); // mask
+    result /= (1LL<<significandbits); // convert back to float
+    result += 1.0f; // add the one back on
+
+    // deal with the exponent
+    bias = (1<<(expbits-1)) - 1;
+    shift = ((i>>significandbits)&((1LL<<expbits)-1)) - bias;
+    while(shift > 0) { result *= 2.0; shift--; }
+    while(shift < 0) { result /= 2.0; shift++; }
+
+    // sign it
+    result *= (i>>(bits-1))&1? -1.0: 1.0;
+
+    return result;
 }
 
 // Threads
@@ -183,13 +211,14 @@ static THD_FUNCTION(packet_process_thread, arg) {
 	for(;;) {
 		chEvtWaitAny((eventmask_t) 1);
 
-		while (serial_rx_read_pos != serial_rx_write_pos) {
-			packet_process_byte(serial_rx_buffer[serial_rx_read_pos++], PACKET_HANDLER);
+	while (serial_rx_read_pos != serial_rx_write_pos) {
+		packet_process_byte(serial_rx_buffer[serial_rx_read_pos++], PACKET_HANDLER);
 
-			if (serial_rx_read_pos == SERIAL_RX_BUFFER_SIZE) {
-				serial_rx_read_pos = 0;
-			}
+		if (serial_rx_read_pos == SERIAL_RX_BUFFER_SIZE) {
+			serial_rx_read_pos = 0;
 		}
+		
+	}
 	}
 }
 
@@ -207,6 +236,7 @@ static THD_FUNCTION(longshoard_thread, arg) {
 	(void)arg;
  
 	chRegSetThreadName("APP_LONGSHOARD");
+	process_tp = chThdGetSelfX();
  
 	for(;;) {
 		// Read the pot value and scale it to a number between 0 and 1 (see hw_46.h)
@@ -219,7 +249,38 @@ static THD_FUNCTION(longshoard_thread, arg) {
 		values[1] = mc_interface_read_reset_avg_motor_current();
 		values[2] = mc_interface_read_reset_avg_input_current();
 		values[3] = GET_INPUT_VOLTAGE();
-		values[4] = pot;
+		values[4] = 1.0f - pot;
+
+		//if(new_data == 1 && prev_data == 0){
+			uint32_t fi2[2];
+			int i = serial_rx_read_pos;
+			fi2[0] = serial_rx_buffer[i-3] << 16| serial_rx_buffer[i-2];	
+			fi2[1] = serial_rx_buffer[i-1] << 16| serial_rx_buffer[i];
+			float duty, brake_current;
+			duty = 		unpack754_32(fi2[0]);
+			brake_current = unpack754_32(fi2[1]);
+			uint8_t *addr = (uint8_t*)&serial_rx_buffer[4];	
+			uint8_t brake_now = addr[0];
+			uint8_t release = addr[1];
+			prev_data = 1;
+			new_data = 0;
+			//if(brake_now == 1)
+			//	mc_interface_brake_now();
+			//if(release == 1)
+			//	mc_interface_release_motor();
+			//mc_interface_set_brake_current(brake_current);
+			//mc_interface_set_duty(duty);
+
+			
+			values[0] = serial_rx_read_pos;
+			values[1] = new_data;
+			//commands_printf("duty          %f",duty);		 
+			//commands_printf("break_current %f",break_current);		 
+			//commands_printf("break         %d",break_now);		 
+			//commands_printf("release       %d",release);		 
+		//}else if(new_data == 0 && prev_data == 1){
+		//	prev_data = 0;
+		//}
 
 		uint32_t fi[5];
 		fi[0] = pack754_32(values[0]);
@@ -227,38 +288,13 @@ static THD_FUNCTION(longshoard_thread, arg) {
 		fi[2] = pack754_32(values[2]);
 		fi[3] = pack754_32(values[3]);
 		fi[4] = pack754_32(values[4]);
-		//fi[0] = pack754_32(1.0f);
-		//fi[1] = pack754_32(2.0f);
-		//fi[2] = pack754_32(3.0f);
-		//fi[3] = pack754_32(4.0f);
-		//fi[4] = pack754_32(5.0f);
 
 	 	packet_send_packet((unsigned char*)&fi, sizeof(uint32_t)*5, PACKET_HANDLER);
 
-		//int ind = 0;
-		
-		//buffer_append_float16(send_buffer, NTC_TEMP(ADC_IND_TEMP_MOS1), 1e1, &ind);
-		//buffer_append_float16(send_buffer, NTC_TEMP(ADC_IND_TEMP_MOS2), 1e1, &ind);
-		//buffer_append_float16(send_buffer, NTC_TEMP(ADC_IND_TEMP_MOS3), 1e1, &ind);
-		//buffer_append_float16(send_buffer, NTC_TEMP(ADC_IND_TEMP_MOS4), 1e1, &ind);
-		//buffer_append_float16(send_buffer, NTC_TEMP(ADC_IND_TEMP_MOS5), 1e1, &ind);
-		//buffer_append_float16(send_buffer, NTC_TEMP(ADC_IND_TEMP_MOS6), 1e1, &ind);
-		//buffer_append_float16(send_buffer, NTC_TEMP(ADC_IND_TEMP_PCB), 1e1, &ind);
-		//buffer_append_float32(send_buffer, mc_interface_read_reset_avg_motor_current(), 1e2, &ind);
-		//buffer_append_float32(send_buffer, mc_interface_read_reset_avg_input_current(), 1e2, &ind);
-		//buffer_append_float16(send_buffer, mc_interface_get_duty_cycle_now(), 1e3, &ind);
-		//buffer_append_float32(send_buffer, mc_interface_get_rpm(), 1e0, &ind);
-		//buffer_append_float16(send_buffer, GET_INPUT_VOLTAGE(), 1e1, &ind);
-		//buffer_append_float32(send_buffer, mc_interface_get_amp_hours(false), 1e4, &ind);
-		//buffer_append_float32(send_buffer, mc_interface_get_amp_hours_charged(false), 1e4, &ind);
-		//buffer_append_float32(send_buffer, mc_interface_get_watt_hours(false), 1e4, &ind);
-		//buffer_append_float32(send_buffer, mc_interface_get_watt_hours_charged(false), 1e4, &ind);
-		//buffer_append_int32(send_buffer, mc_interface_get_tachometer_value(false), &ind);
-		//buffer_append_int32(send_buffer, mc_interface_get_tachometer_abs_value(false), &ind);
+		//commands_printf("%f\n",values[4]);		 
 
-	 	//packet_send_packet(send_buffer, ind, PACKET_HANDLER);
 
-		commands_printf("%f\n",pot);		 
+		//mc_interface_set_duty(values[4]);
 
 		chThdSleepMilliseconds(50);
  
