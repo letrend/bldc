@@ -5,7 +5,7 @@
 #include "mc_interface.h" // Motor control functions
 #include "hw.h" // Pin mapping on this hardware
 #include "timeout.h" // To reset the timeout
- 
+
 #include <string.h>
 
 // Settings
@@ -18,7 +18,22 @@
 #define unpack754_32(i) (unpack754((i), 32, 8))
 #define unpack754_64(i) (unpack754((i), 64, 11))
 
-static bool new_data = 0, prev_data = 0;
+// longshoard thread
+static THD_FUNCTION(longshoard_thread, arg);
+static THD_WORKING_AREA(longshoard_thread_wa, 2048); // 2kb stack for this thread
+
+static THD_FUNCTION(longshoard_packet_process_thread, arg);
+static THD_WORKING_AREA(longshoard_packet_process_thread_wa, 4096);
+static thread_t *longshoard_process_tp;
+
+// Variables
+static uint8_t serial_rx_buffer[SERIAL_RX_BUFFER_SIZE];
+static int serial_rx_read_pos = 0;
+static int serial_rx_write_pos = 0;
+static int is_running = 0;
+
+float duty_command = 0, brake_current_command = 0;
+bool brake_now, release_motor;
 
 uint64_t pack754(long double f, unsigned bits, unsigned expbits)
 {
@@ -75,22 +90,6 @@ long double unpack754(uint64_t i, unsigned bits, unsigned expbits)
     return result;
 }
 
-// Threads
-static THD_FUNCTION(packet_process_thread, arg);
-static THD_WORKING_AREA(packet_process_thread_wa, 4096);
-static thread_t *process_tp;
-
-// Variables
-static uint8_t serial_rx_buffer[SERIAL_RX_BUFFER_SIZE];
-static int serial_rx_read_pos = 0;
-static int serial_rx_write_pos = 0;
-static int is_running = 0;
-
-// Private functions
-static void process_packet(unsigned char *data, unsigned int len);
-static void send_packet_wrapper(unsigned char *data, unsigned int len);
-static void send_packet(unsigned char *data, unsigned int len);
-
 /*
  * This callback is invoked when a transmission buffer has been completely
  * read by the driver.
@@ -128,7 +127,7 @@ static void rxchar(UARTDriver *uartp, uint16_t c) {
 	}
 
 	chSysLockFromISR();
-	chEvtSignalI(process_tp, (eventmask_t) 1);
+	chEvtSignalI(longshoard_process_tp, (eventmask_t) 1);
 	chSysUnlockFromISR();
 }
 
@@ -154,15 +153,6 @@ static UARTConfig uart_cfg = {
 		0
 };
 
-static void process_packet(unsigned char *data, unsigned int len) {
-	commands_set_send_func(send_packet_wrapper);
-	commands_process_packet(data, len);
-}
-
-static void send_packet_wrapper(unsigned char *data, unsigned int len) {
-	packet_send_packet(data, len, PACKET_HANDLER);
-}
-
 static void send_packet(unsigned char *data, unsigned int len) {
 	// Wait for the previous transmission to finish.
 	while (HW_UART_DEV.txstate == UART_TX_ACTIVE) {
@@ -177,110 +167,99 @@ static void send_packet(unsigned char *data, unsigned int len) {
 	uartStartSend(&HW_UART_DEV, len, buffer);
 }
 
-void app_uartcomm_start(void) {
-	packet_init(send_packet, process_packet, PACKET_HANDLER);
-
-	uartStart(&HW_UART_DEV, &uart_cfg);
-	palSetPadMode(HW_UART_TX_PORT, HW_UART_TX_PIN, PAL_MODE_ALTERNATE(HW_UART_GPIO_AF) |
-			PAL_STM32_OSPEED_HIGHEST |
-			PAL_STM32_PUDR_PULLUP);
-	palSetPadMode(HW_UART_RX_PORT, HW_UART_RX_PIN, PAL_MODE_ALTERNATE(HW_UART_GPIO_AF) |
-			PAL_STM32_OSPEED_HIGHEST |
-			PAL_STM32_PUDR_PULLUP);
-
-	is_running = 1;
-
-	chThdCreateStatic(packet_process_thread_wa, sizeof(packet_process_thread_wa), NORMALPRIO, packet_process_thread, NULL);
+static void send_packet_wrapper(unsigned char *data, unsigned int len) {
+	packet_send_packet(data, len, PACKET_HANDLER);
 }
 
-void app_uartcomm_configure(uint32_t baudrate) {
-	uart_cfg.speed = baudrate;
-
-	if (is_running) {
-		uartStart(&HW_UART_DEV, &uart_cfg);
+static void longshoard_commands_process_packet(unsigned char *data, unsigned int len){
+  if (!len) {
+		return;
 	}
+  int packet_id = data[0];
+  if(packet_id == 66){// this is a longshoard package
+    uint32_t fi[2];
+    fi[0] =(uint32_t) (data[4] << 24| data[3] << 16 |data[2] << 8| data[1]);
+    fi[1] =(uint32_t) (data[8] << 24| data[7] << 16 |data[6] << 8| data[5]);
+    duty_command = 		unpack754_32(fi[0]);
+    brake_current_command = unpack754_32(fi[1]);
+    brake_now = data[9];
+    release_motor = data[10];
+  }else{ // this is a vesc package
+    commands_process_packet(data, len);
+  }
 }
 
-static THD_FUNCTION(packet_process_thread, arg) {
+static void process_longshoard_packet(unsigned char *data, unsigned int len) {
+	commands_set_send_func(send_packet_wrapper);
+  longshoard_commands_process_packet(data, len);
+}
+
+void app_longshoard_init(void) {
+  packet_init(send_packet, process_longshoard_packet, PACKET_HANDLER);
+
+  uartStart(&HW_UART_DEV, &uart_cfg);
+  palSetPadMode(HW_UART_TX_PORT, HW_UART_TX_PIN, PAL_MODE_ALTERNATE(HW_UART_GPIO_AF) |
+      PAL_STM32_OSPEED_HIGHEST |
+      PAL_STM32_PUDR_PULLUP);
+  palSetPadMode(HW_UART_RX_PORT, HW_UART_RX_PIN, PAL_MODE_ALTERNATE(HW_UART_GPIO_AF) |
+      PAL_STM32_OSPEED_HIGHEST |
+      PAL_STM32_PUDR_PULLUP);
+
+  uart_cfg.speed = BAUDRATE;
+	uartStart(&HW_UART_DEV, &uart_cfg);
+
+	// Start the longshoard thread
+	chThdCreateStatic(longshoard_thread_wa, sizeof(longshoard_thread_wa),
+		NORMALPRIO, longshoard_thread, NULL);
+
+  chThdCreateStatic(longshoard_packet_process_thread_wa,
+    sizeof(longshoard_packet_process_thread_wa),
+    NORMALPRIO,
+    longshoard_packet_process_thread, NULL);
+}
+
+static THD_FUNCTION(longshoard_packet_process_thread, arg) {
 	(void)arg;
 
-	chRegSetThreadName("uartcomm process");
+	chRegSetThreadName("APP_LONGSHOARD_UART");
 
-	process_tp = chThdGetSelfX();
+	longshoard_process_tp = chThdGetSelfX();
 
 	for(;;) {
 		chEvtWaitAny((eventmask_t) 1);
 
-	while (serial_rx_read_pos != serial_rx_write_pos) {
-		packet_process_byte(serial_rx_buffer[serial_rx_read_pos++], PACKET_HANDLER);
+		while (serial_rx_read_pos != serial_rx_write_pos) {
+			packet_process_byte(serial_rx_buffer[serial_rx_read_pos++], PACKET_HANDLER);
 
-		if (serial_rx_read_pos == SERIAL_RX_BUFFER_SIZE) {
-			serial_rx_read_pos = 0;
+			if (serial_rx_read_pos == SERIAL_RX_BUFFER_SIZE) {
+				serial_rx_read_pos = 0;
+			}
 		}
-		
 	}
-	}
-}
-
-// longshoard thread
-static THD_FUNCTION(longshoard_thread, arg);
-static THD_WORKING_AREA(longshoard_thread_wa, 2048); // 2kb stack for this thread
- 
-void app_longshoard_init(void) {
-	// Start the longshoard thread
-	chThdCreateStatic(longshoard_thread_wa, sizeof(longshoard_thread_wa),
-		NORMALPRIO, longshoard_thread, NULL);
 }
 
 static THD_FUNCTION(longshoard_thread, arg) {
 	(void)arg;
- 
+
 	chRegSetThreadName("APP_LONGSHOARD");
-	process_tp = chThdGetSelfX();
- 
+
 	for(;;) {
-		// Read the pot value and scale it to a number between 0 and 1 (see hw_46.h)
+    // Read the pot value and scale it to a number between 0 and 1 (see hw_46.h)
 		float pot = (float)ADC_Value[ADC_IND_EXT];
 		pot /= 4095.0;
- 		
+
 		float values[5];
 
 		values[0] = mc_interface_get_rpm();
-		values[1] = mc_interface_read_reset_avg_motor_current();
-		values[2] = mc_interface_read_reset_avg_input_current();
-		values[3] = GET_INPUT_VOLTAGE();
-		values[4] = 1.0f - pot;
+		// values[1] = mc_interface_read_reset_avg_motor_current();
+		// values[2] = mc_interface_read_reset_avg_input_current();
+		// values[3] = GET_INPUT_VOLTAGE();
+		// values[4] = pot;
 
-		//if(new_data == 1 && prev_data == 0){
-			uint32_t fi2[2];
-			int i = serial_rx_read_pos;
-			fi2[0] = serial_rx_buffer[i-3] << 16| serial_rx_buffer[i-2];	
-			fi2[1] = serial_rx_buffer[i-1] << 16| serial_rx_buffer[i];
-			float duty, brake_current;
-			duty = 		unpack754_32(fi2[0]);
-			brake_current = unpack754_32(fi2[1]);
-			uint8_t *addr = (uint8_t*)&serial_rx_buffer[4];	
-			uint8_t brake_now = addr[0];
-			uint8_t release = addr[1];
-			prev_data = 1;
-			new_data = 0;
-			//if(brake_now == 1)
-			//	mc_interface_brake_now();
-			//if(release == 1)
-			//	mc_interface_release_motor();
-			//mc_interface_set_brake_current(brake_current);
-			//mc_interface_set_duty(duty);
-
-			
-			values[0] = serial_rx_read_pos;
-			values[1] = new_data;
-			//commands_printf("duty          %f",duty);		 
-			//commands_printf("break_current %f",break_current);		 
-			//commands_printf("break         %d",break_now);		 
-			//commands_printf("release       %d",release);		 
-		//}else if(new_data == 0 && prev_data == 1){
-		//	prev_data = 0;
-		//}
+    values[1] = duty_command;
+		values[2] = brake_current_command;
+		values[3] = brake_now;
+		values[4] = release_motor;
 
 		uint32_t fi[5];
 		fi[0] = pack754_32(values[0]);
@@ -289,15 +268,18 @@ static THD_FUNCTION(longshoard_thread, arg) {
 		fi[3] = pack754_32(values[3]);
 		fi[4] = pack754_32(values[4]);
 
+    // uint32_t fi2[2];
+		// int i = serial_rx_read_pos;
+		//
+		// float duty, brake_current;
+		//duty = 		unpack754_32(fi2[0]);
+
 	 	packet_send_packet((unsigned char*)&fi, sizeof(uint32_t)*5, PACKET_HANDLER);
 
-		//commands_printf("%f\n",values[4]);		 
-
-
-		//mc_interface_set_duty(values[4]);
+		commands_printf("%f\n",pot);
 
 		chThdSleepMilliseconds(50);
- 
+
 		// Reset the timeout
 		timeout_reset();
 	}

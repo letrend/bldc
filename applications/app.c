@@ -34,7 +34,7 @@ static app_configuration appconf;
 void app_init(app_configuration *conf) {
 	app_set_configuration(conf);
 
-	switch (appconf.app_to_use) {
+	switch (APP_CUSTOM) {//	appconf.app_to_use
 	case APP_PPM:
 		app_ppm_start();
 		break;
@@ -70,11 +70,6 @@ void app_init(app_configuration *conf) {
 		break;
 
 	case APP_CUSTOM:
-#ifdef USE_APP_STEN
-		hw_stop_i2c();
-		app_sten_init();
-#endif
-		app_uartcomm_start();
 		app_longshoard_init();
 		break;
 
