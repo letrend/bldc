@@ -180,8 +180,8 @@ static void longshoard_commands_process_packet(unsigned char *data, unsigned int
     uint32_t fi[2];
     fi[0] =(uint32_t) (data[4] << 24| data[3] << 16 |data[2] << 8| data[1]);
     fi[1] =(uint32_t) (data[8] << 24| data[7] << 16 |data[6] << 8| data[5]);
-    duty_command = 		unpack754_32(fi[0]);
-    brake_current_command = unpack754_32(fi[1]);
+    duty_command = 		unpack754_32(fi[1]);
+    brake_current_command = unpack754_32(fi[0]);
     brake_now = data[9];
     release_motor = data[10];
   }else{ // this is a vesc package
@@ -251,15 +251,10 @@ static THD_FUNCTION(longshoard_thread, arg) {
 		float values[5];
 
 		values[0] = mc_interface_get_rpm();
-		// values[1] = mc_interface_read_reset_avg_motor_current();
-		// values[2] = mc_interface_read_reset_avg_input_current();
-		// values[3] = GET_INPUT_VOLTAGE();
-		// values[4] = pot;
-
-    values[1] = duty_command;
-		values[2] = brake_current_command;
-		values[3] = brake_now;
-		values[4] = release_motor;
+		values[1] = mc_interface_read_reset_avg_motor_current();
+		values[2] = mc_interface_read_reset_avg_input_current();
+		values[3] = GET_INPUT_VOLTAGE();
+		values[4] = pot;
 
 		uint32_t fi[5];
 		fi[0] = pack754_32(values[0]);
@@ -268,11 +263,16 @@ static THD_FUNCTION(longshoard_thread, arg) {
 		fi[3] = pack754_32(values[3]);
 		fi[4] = pack754_32(values[4]);
 
-    // uint32_t fi2[2];
-		// int i = serial_rx_read_pos;
-		//
-		// float duty, brake_current;
-		//duty = 		unpack754_32(fi2[0]);
+    if(brake_now == 1){
+      mc_interface_set_brake_current(brake_current_command);
+      mc_interface_brake_now();
+      mc_interface_set_duty(0);
+    }else if(release_motor == 1){
+      mc_interface_release_motor();
+      if(duty_command>0){
+        mc_interface_set_duty(duty_command);
+      }
+    }
 
 	 	packet_send_packet((unsigned char*)&fi, sizeof(uint32_t)*5, PACKET_HANDLER);
 
