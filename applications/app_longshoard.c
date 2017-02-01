@@ -32,8 +32,18 @@ static int serial_rx_read_pos = 0;
 static int serial_rx_write_pos = 0;
 static int is_running = 0;
 
-float duty_command = 0, brake_current_command = 0;
-bool brake_now, release_motor;
+enum LONGSHOARD_COMMAND{
+  BRAKE = 40,
+  RELEASE = 41,
+  TOGGLE_AUTO_WEIGHT_CALIBRATION = 42,
+  SET_BRAKE_CURRENT = 43,
+  SET_DUTY = 44,
+  SET_MIN_WEIGHT = 45,
+  SET_MAX_WEIGHT = 46
+};
+
+float duty = 0, brake_current = 0, min_weight = 0.3f, max_weight = 0.1f;
+bool brake_now = false, release_motor = true, weight_calibration = true;
 
 uint64_t pack754(long double f, unsigned bits, unsigned expbits)
 {
@@ -176,14 +186,40 @@ static void longshoard_commands_process_packet(unsigned char *data, unsigned int
 		return;
 	}
   int packet_id = data[0];
-  if(packet_id == 66){// this is a longshoard package
-    uint32_t fi[2];
-    fi[0] =(uint32_t) (data[4] << 24| data[3] << 16 |data[2] << 8| data[1]);
-    fi[1] =(uint32_t) (data[8] << 24| data[7] << 16 |data[6] << 8| data[5]);
-    duty_command = 		unpack754_32(fi[1]);
-    brake_current_command = unpack754_32(fi[0]);
-    brake_now = data[9];
-    release_motor = data[10];
+  if(packet_id >= 40){// this is a longshoard package
+    switch(packet_id){
+      case BRAKE:
+        mc_interface_brake_now();
+        break;
+      case RELEASE:
+        mc_interface_release_motor();
+        break;
+      case SET_BRAKE_CURRENT:{
+        uint32_t fi = (uint32_t) (data[4] << 24| data[3] << 16 |data[2] << 8| data[1]);
+        brake_current = unpack754_32(fi);
+        mc_interface_set_brake_current(brake_current);
+        break;
+      }
+      case SET_DUTY:{
+        uint32_t fi = (uint32_t) (data[4] << 24| data[3] << 16 |data[2] << 8| data[1]);
+        duty = unpack754_32(fi);
+        mc_interface_set_duty(duty);
+        break;
+      }
+      case SET_MIN_WEIGHT:{
+        uint32_t fi = (uint32_t) (data[4] << 24| data[3] << 16 |data[2] << 8| data[1]);
+        min_weight = unpack754_32(fi);
+        break;
+      }
+      case SET_MAX_WEIGHT:{
+        uint32_t fi = (uint32_t) (data[4] << 24| data[3] << 16 |data[2] << 8| data[1]);
+        max_weight = unpack754_32(fi);
+        break;
+      }
+      case TOGGLE_AUTO_WEIGHT_CALIBRATION:
+        weight_calibration = !weight_calibration;
+        break;
+    }
   }else{ // this is a vesc package
     commands_process_packet(data, len);
   }
@@ -248,6 +284,14 @@ static THD_FUNCTION(longshoard_thread, arg) {
 		float pot = (float)ADC_Value[ADC_IND_EXT];
 		pot /= 4095.0;
 
+    if(weight_calibration){
+      if(pot >= min_weight){
+        mc_interface_release_motor();
+      }else{
+        mc_interface_set_duty(0.5-pot);
+      }
+    }
+
 		float values[5];
 
 		values[0] = mc_interface_get_rpm();
@@ -262,17 +306,6 @@ static THD_FUNCTION(longshoard_thread, arg) {
 		fi[2] = pack754_32(values[2]);
 		fi[3] = pack754_32(values[3]);
 		fi[4] = pack754_32(values[4]);
-
-    if(brake_now == 1){
-      mc_interface_set_brake_current(brake_current_command);
-      mc_interface_brake_now();
-      mc_interface_set_duty(0);
-    }else if(release_motor == 1){
-      mc_interface_release_motor();
-      if(duty_command>0){
-        mc_interface_set_duty(duty_command);
-      }
-    }
 
 	 	packet_send_packet((unsigned char*)&fi, sizeof(uint32_t)*5, PACKET_HANDLER);
 

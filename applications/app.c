@@ -34,7 +34,7 @@ static app_configuration appconf;
 void app_init(app_configuration *conf) {
 	app_set_configuration(conf);
 
-	switch (APP_CUSTOM) {//	appconf.app_to_use
+	switch (appconf.app_to_use) {//
 	case APP_PPM:
 		app_ppm_start();
 		break;
