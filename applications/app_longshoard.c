@@ -285,10 +285,11 @@ static THD_FUNCTION(longshoard_thread, arg) {
 		pot /= 4095.0;
 
     if(weight_calibration){
-      if(pot >= min_weight){
+      if(pot >= max_weight){
         mc_interface_release_motor();
       }else{
-        mc_interface_set_duty(0.5-pot);
+        float rpm = mc_interface_get_rpm();
+        mc_interface_set_pid_speed(rpm);
       }
     }
 
