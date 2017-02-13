@@ -5,7 +5,7 @@
 #include "mc_interface.h" // Motor control functions
 #include "hw.h" // Pin mapping on this hardware
 #include "timeout.h" // To reset the timeout
-
+#include "crc.h"
 #include <string.h>
 
 // Settings
@@ -30,20 +30,31 @@ static thread_t *longshoard_process_tp;
 static uint8_t serial_rx_buffer[SERIAL_RX_BUFFER_SIZE];
 static int serial_rx_read_pos = 0;
 static int serial_rx_write_pos = 0;
-static int is_running = 0;
 
 enum LONGSHOARD_COMMAND{
-  BRAKE = 40,
-  RELEASE = 41,
-  TOGGLE_AUTO_WEIGHT_CALIBRATION = 42,
-  SET_BRAKE_CURRENT = 43,
-  SET_DUTY = 44,
-  SET_MIN_WEIGHT = 45,
-  SET_MAX_WEIGHT = 46
+    BRAKE = 40,
+    RELEASE = 41,
+    MODE = 42,
+    MANUAL_CONTROL = 43,
+    SET_BRAKE_CURRENT = 44,
+    SET_DUTY = 45,
+    SET_MIN_WEIGHT = 46,
+    SET_MAX_WEIGHT = 47,
+    RPM_DATA = 48,
+    WEIGHT_DATA = 49,
+    CURRENT_DATA = 50,
+    END_DATA = 51,
+    START_DATA = 52
 };
 
 float duty = 0, brake_current = 0, min_weight = 0.3f, max_weight = 0.1f;
-bool brake_now = false, release_motor = true, weight_calibration = true;
+bool brake_now = false, release_motor = true;
+bool mode[] = {false, false, false, false};
+unsigned int data_point = 0;
+unsigned short checksum = 0;
+float rpm_data[200], weight_data[200], current_data[200];
+bool data_valid = false, receiving_data = false;
+bool manual_control = true;
 
 uint64_t pack754(long double f, unsigned bits, unsigned expbits)
 {
@@ -216,9 +227,63 @@ static void longshoard_commands_process_packet(unsigned char *data, unsigned int
         max_weight = unpack754_32(fi);
         break;
       }
-      case TOGGLE_AUTO_WEIGHT_CALIBRATION:
-        weight_calibration = !weight_calibration;
+      case MODE:{
+        mode[data[1]] = data[2];
         break;
+      }
+      case MANUAL_CONTROL:{
+        manual_control = !manual_control;
+        break;
+      }
+      case RPM_DATA:{
+        checksum = crc16(data, len);
+        unsigned short frame_checksum = (unsigned short) (data[2] << 8) | data[1];
+        if(checksum==frame_checksum){ // check if data is not corrupted
+          unsigned int i = 0;
+          for(i = 4; i<data[3]*sizeof(uint32_t); i++){
+            uint32_t fi = (uint32_t) (data[i+4] << 24| data[i+3] << 16 |data[i+2] << 8| data[i+1]);
+            rpm_data[data_point++] = unpack754_32(fi);
+          }
+        }
+        break;
+      }
+      case WEIGHT_DATA:{
+        checksum = crc16(data, len);
+        unsigned short frame_checksum = (unsigned short) (data[2] << 8) | data[1];
+        if(checksum==frame_checksum){ // check if data is not corrupted
+          unsigned int i = 0;
+          for(i = 4; i<data[3]*sizeof(uint32_t); i++){
+            uint32_t fi = (uint32_t) (data[i+4] << 24| data[i+3] << 16 |data[i+2] << 8| data[i+1]);
+            weight_data[data_point++] = unpack754_32(fi);
+          }
+        }
+        break;
+      }
+      case CURRENT_DATA:{
+        checksum = crc16(data, len);
+        unsigned short frame_checksum = (unsigned short) (data[2] << 8) | data[1];
+        if(checksum==frame_checksum){ // check if data is not corrupted
+          unsigned int i = 0;
+          for(i = 4; i<data[3]*sizeof(uint32_t); i++){
+            uint32_t fi = (uint32_t) (data[i+4] << 24| data[i+3] << 16 |data[i+2] << 8| data[i+1]);
+            current_data[data_point++] = unpack754_32(fi);
+          }
+        }
+        break;
+      }
+      case START_DATA:{
+        data_point = 0;
+        break;
+      }
+      case END_DATA:{
+        uint32_t total_number_of_data_points = (uint32_t) (data[4] << 24| data[3] << 16 |data[2] << 8| data[1]);
+        if((data_point-1)!=total_number_of_data_points){
+          data_valid = false;
+        }else{
+          data_valid = true;
+        }
+        break;
+      }
     }
   }else{ // this is a vesc package
     commands_process_packet(data, len);
@@ -284,7 +349,7 @@ static THD_FUNCTION(longshoard_thread, arg) {
 		float pot = (float)ADC_Value[ADC_IND_EXT];
 		pot /= 4095.0;
 
-    if(weight_calibration){
+    if(!manual_control){
       if(pot >= max_weight){
         mc_interface_release_motor();
       }else{
@@ -295,9 +360,9 @@ static THD_FUNCTION(longshoard_thread, arg) {
 
 		float values[5];
 
-		values[0] = mc_interface_get_rpm();
-		values[1] = mc_interface_read_reset_avg_motor_current();
-		values[2] = mc_interface_read_reset_avg_input_current();
+    values[0] = (receiving_data << 0 | data_valid << 1 | manual_control << 2)&0x00000003;
+		values[1] = mc_interface_get_rpm();
+		values[2] = mc_interface_read_reset_avg_motor_current();
 		values[3] = GET_INPUT_VOLTAGE();
 		values[4] = pot;
 
@@ -310,7 +375,7 @@ static THD_FUNCTION(longshoard_thread, arg) {
 
 	 	packet_send_packet((unsigned char*)&fi, sizeof(uint32_t)*5, PACKET_HANDLER);
 
-		commands_printf("%f\n",pot);
+		commands_printf("%f\n",(double)pot);
 
 		chThdSleepMilliseconds(50);
 
