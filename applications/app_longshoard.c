@@ -192,6 +192,21 @@ static void send_packet_wrapper(unsigned char *data, unsigned int len) {
 	packet_send_packet(data, len, PACKET_HANDLER);
 }
 
+bool checkIntegrityAndMerge(float *des, unsigned char* data, unsigned int len ){
+  checksum = crc16(&data[4], len-4);
+  unsigned short frame_checksum = (unsigned short) (data[2] << 8) | data[1];
+  bool valid = false;
+  if(checksum==frame_checksum){ // check if data is not corrupted
+    valid = true;
+    unsigned int i = 0;
+    for(i = 4; i<data[3]*sizeof(uint32_t); i+=sizeof(uint32_t)){
+      uint32_t fi = (uint32_t) (data[i+4] << 24| data[i+3] << 16 |data[i+2] << 8| data[i+1]);
+      des[data_point++] = unpack754_32(fi);
+    }
+  }
+  return valid;
+}
+
 static void longshoard_commands_process_packet(unsigned char *data, unsigned int len){
   if (!len) {
 		return;
@@ -236,49 +251,30 @@ static void longshoard_commands_process_packet(unsigned char *data, unsigned int
         break;
       }
       case RPM_DATA:{
-        checksum = crc16(data, len);
-        unsigned short frame_checksum = (unsigned short) (data[2] << 8) | data[1];
-        if(checksum==frame_checksum){ // check if data is not corrupted
-          unsigned int i = 0;
-          for(i = 4; i<data[3]*sizeof(uint32_t); i++){
-            uint32_t fi = (uint32_t) (data[i+4] << 24| data[i+3] << 16 |data[i+2] << 8| data[i+1]);
-            rpm_data[data_point++] = unpack754_32(fi);
-          }
-        }
+        receiving_data = true;
+        data_valid = checkIntegrityAndMerge( rpm_data, data, len );
         break;
       }
       case WEIGHT_DATA:{
-        checksum = crc16(data, len);
-        unsigned short frame_checksum = (unsigned short) (data[2] << 8) | data[1];
-        if(checksum==frame_checksum){ // check if data is not corrupted
-          unsigned int i = 0;
-          for(i = 4; i<data[3]*sizeof(uint32_t); i++){
-            uint32_t fi = (uint32_t) (data[i+4] << 24| data[i+3] << 16 |data[i+2] << 8| data[i+1]);
-            weight_data[data_point++] = unpack754_32(fi);
-          }
-        }
+        receiving_data = true;
+        data_valid = checkIntegrityAndMerge( weight_data, data, len );
         break;
       }
       case CURRENT_DATA:{
-        checksum = crc16(data, len);
-        unsigned short frame_checksum = (unsigned short) (data[2] << 8) | data[1];
-        if(checksum==frame_checksum){ // check if data is not corrupted
-          unsigned int i = 0;
-          for(i = 4; i<data[3]*sizeof(uint32_t); i++){
-            uint32_t fi = (uint32_t) (data[i+4] << 24| data[i+3] << 16 |data[i+2] << 8| data[i+1]);
-            current_data[data_point++] = unpack754_32(fi);
-          }
-        }
+        receiving_data = true;
+        data_valid = checkIntegrityAndMerge( current_data, data, len );
         break;
       }
       case START_DATA:{
+        receiving_data = true;
         data_point = 0;
         break;
       }
       case END_DATA:{
+        receiving_data = false;
         uint32_t total_number_of_data_points = (uint32_t) (data[4] << 24| data[3] << 16 |data[2] << 8| data[1]);
-        if((data_point-1)!=total_number_of_data_points){
-          data_valid = false;
+        if(data_point==total_number_of_data_points && data_valid){ // if data valid so far and the number of data points is correct
+          data_valid = true;
         }else{
           data_valid = true;
         }
@@ -358,20 +354,19 @@ static THD_FUNCTION(longshoard_thread, arg) {
       }
     }
 
-		float values[5];
+		float values[4];
 
-    values[0] = (receiving_data << 0 | data_valid << 1 | manual_control << 2)&0x00000003;
-		values[1] = mc_interface_get_rpm();
-		values[2] = mc_interface_read_reset_avg_motor_current();
-		values[3] = GET_INPUT_VOLTAGE();
-		values[4] = pot;
+		values[0] = mc_interface_get_rpm();
+		values[1] = mc_interface_read_reset_avg_motor_current();
+		values[2] = GET_INPUT_VOLTAGE();
+		values[3] = pot;
 
 		uint32_t fi[5];
-		fi[0] = pack754_32(values[0]);
-		fi[1] = pack754_32(values[1]);
-		fi[2] = pack754_32(values[2]);
-		fi[3] = pack754_32(values[3]);
-		fi[4] = pack754_32(values[4]);
+		fi[0] = (receiving_data | data_valid << 1 | manual_control << 2);
+		fi[1] = pack754_32(values[0]);
+		fi[2] = pack754_32(values[1]);
+		fi[3] = pack754_32(values[2]);
+		fi[4] = pack754_32(values[3]);
 
 	 	packet_send_packet((unsigned char*)&fi, sizeof(uint32_t)*5, PACKET_HANDLER);
 
