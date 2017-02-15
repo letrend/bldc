@@ -11,8 +11,8 @@ ifeq ($(USE_OPT),)
 endif
 
 # C specific options here (added to USE_OPT).
-ifeq ($(USE_COPT),)
-  USE_COPT = 
+ifeq ($(USE_COPT),1)
+  USE_OPT = -std=gnu99 -O1 -ggdb -fomit-frame-pointer -falign-functions=16 
 endif
 
 # C++ specific options here (added to USE_OPT).

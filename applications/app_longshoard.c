@@ -48,7 +48,7 @@ enum LONGSHOARD_COMMAND{
     START_DATA = 52
 };
 
-#define CIRCULAR_BUFFER_LENGTH 128
+#define CIRCULAR_BUFFER_LENGTH 256
 
 typedef struct _CircularBuffert{
     uint8_t     mWrite;
@@ -74,21 +74,21 @@ uint32_t total_number_of_data_points = 0;
 bool manual_control = true;
 
 float cross_correlate(CircularBuffert* signal, float* filter, float std_filter, float signal_mean){
-  int j = signal->mWrite;
+  int j = signal->mWrite-1;
   float response = 0, std = 0;
   for(int i=0; i<total_number_of_data_points; i++){
       std+=(signal->mBuffer[j]-signal_mean)*(signal->mBuffer[j]-signal_mean);
       j--;
-      if(j==0){
+      if(j<0){
         j = CIRCULAR_BUFFER_LENGTH-1;
       }
   }
   std = sqrtf(std);
-  j = signal->mWrite;
+  j = signal->mWrite-1;
   for(int i=total_number_of_data_points-1; i>=0; i--){
     response += (filter[i]*(signal->mBuffer[j]-signal_mean));
     j--;
-    if(j==0){
+    if(j<0){
       j = CIRCULAR_BUFFER_LENGTH-1;
     }
   }
@@ -407,7 +407,7 @@ static THD_FUNCTION(longshoard_thread, arg) {
 
   float rpm_mean = 0, weight_mean = 0, current_mean = 0;
 
-  long int iter = 0;
+  int iter = 1;
 
 	for(;;) {
     // Read the pot value and scale it to a number between 0 and 1 (see hw_46.h)
@@ -430,7 +430,7 @@ static THD_FUNCTION(longshoard_thread, arg) {
         values[4] = cross_correlate(&current_measure,current_data,std_current,current_mean);
       }
     }else{
-      values[4] = rpm_mean;
+      values[4] = 0;
     }
 
     rpm_mean = (rpm_mean + values[0])/(float)iter;
@@ -454,7 +454,7 @@ static THD_FUNCTION(longshoard_thread, arg) {
 
     // commands_printf("%d\n",total_number_of_data_points);
 
-		chThdSleepMilliseconds(50);
+		chThdSleepMilliseconds(30);
 
 		// Reset the timeout
 		timeout_reset();
